@@ -1,12 +1,15 @@
 {
-  "display_name": "WS Keepalive 保活调优",
-  "plugin_id": "ws-keepalive",
-  "uninstallable": true,
-  "version": "1.0.0",
-  "author": "znq19",
-  "description": "针对 OneBot (SnowLuma/NapCat) WebSocket 连接的保活调优插件，放宽判定容忍度，卡顿时不再误判导致断线。",
-  "repo": "https://github.com/znq19/KiraAI_ws_keepalive_plugin",
-  "core_version": ">=2.29.6",
-  "icon": "icon.png",
-  "tags": ["adapter", "stability"]
+    "display_name": "WS Keepalive 保活调优",
+    "plugin_id": "ws-keepalive",
+    "uninstallable": true,
+    "version": "1.0.1",
+    "author": "znq19",
+    "description": "针对 OneBot (SnowLuma/NapCat) WebSocket 连接的保活调优插件，放宽判定容忍度，卡顿时不再误判导致断线。",
+    "repo": "https://github.com/znq19/KiraAI_ws_keepalive_plugin",
+    "core_version": ">=2.29.6",
+    "icon": "icon.png",
+    "tags": [
+        "adapter",
+        "stability"
+    ]
 }

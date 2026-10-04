@@ -112,20 +112,20 @@ class WsKeepalivePlugin(BasePlugin):
         ok = self._patch_connect()
         if ok:
             logger.info(
-                "[{}] 已应用保活调优: ping_timeout={}s ping_interval={}s open_timeout={}s "
-                "（覆盖新建连接与所有重连）",
-                _SELF_PLUGIN_ID, self.ping_timeout, self.ping_interval, self.open_timeout,
+                f"[{_SELF_PLUGIN_ID}] 已应用保活调优: "
+                f"ping_timeout={self.ping_timeout}s ping_interval={self.ping_interval}s "
+                f"open_timeout={self.open_timeout}s（覆盖新建连接与所有重连）"
             )
         else:
             logger.warning(
-                "[{}] 无法挂钩连接函数（KiraAI 版本可能不同）；将仅对已建立的连接生效",
-                _SELF_PLUGIN_ID,
+                f"[{_SELF_PLUGIN_ID}] 无法挂钩连接函数（KiraAI 版本可能不同）；"
+                f"将仅对已建立的连接生效"
             )
 
         # 适配器可能在本插件加载前就已连接，先实时调优一次
         n = self._retune_live()
         if n and self.debug_log:
-            logger.info("[{}] 初始化时已调优 {} 个已建立连接", _SELF_PLUGIN_ID, n)
+            logger.info(f"[{_SELF_PLUGIN_ID}] 初始化时已调优 {n} 个已建立连接")
 
         # 巡检**始终**运行：它不只为「加载前已连接」兜底，也是挂钩失败时
         # （KiraAI 版本不同）唯一能保证重连后参数不回退的机制。开销可忽略
@@ -143,10 +143,10 @@ class WsKeepalivePlugin(BasePlugin):
             except asyncio.CancelledError:
                 pass
             except Exception as e:
-                logger.debug("[{}] 巡检任务收尾异常: {}", _SELF_PLUGIN_ID, e)
+                logger.debug(f"[{_SELF_PLUGIN_ID}] 巡检任务收尾异常: {e}")
             self._watch_task = None
         self._restore_connect()
-        logger.info("[{}] 已停止", _SELF_PLUGIN_ID)
+        logger.info(f"[{_SELF_PLUGIN_ID}] 已停止")
 
     # ── 动作 1：挂钩连接函数 ─────────────────────────────────────────────
 
@@ -163,7 +163,7 @@ class WsKeepalivePlugin(BasePlugin):
 
             module = importlib.import_module(f"{pkg.__name__}.client")
         except Exception as e:
-            logger.debug("[{}] 导入 napcat_client 失败: {}", _SELF_PLUGIN_ID, e)
+            logger.debug(f"[{_SELF_PLUGIN_ID}] 导入 napcat_client 失败: {e}")
             return False
 
         original = getattr(module, "ws_compatible_connect", None)
@@ -189,9 +189,9 @@ class WsKeepalivePlugin(BasePlugin):
             kwargs["open_timeout"] = plugin.open_timeout
             if plugin.debug_log:
                 logger.info(
-                    "[{}] 建立连接: ping_timeout={} ping_interval={} open_timeout={}",
-                    _SELF_PLUGIN_ID,
-                    kwargs.get("ping_timeout"), kwargs.get("ping_interval"), kwargs.get("open_timeout"),
+                    f"[{_SELF_PLUGIN_ID}] 建立连接: ping_timeout={kwargs.get('ping_timeout')} "
+                    f"ping_interval={kwargs.get('ping_interval')} "
+                    f"open_timeout={kwargs.get('open_timeout')}"
                 )
             return original(uri, extra_headers=extra_headers, **kwargs)
 
@@ -246,7 +246,7 @@ class WsKeepalivePlugin(BasePlugin):
                 if bot is not None and hasattr(bot, "websocket"):
                     yield bot
         except Exception as e:
-            logger.debug("[{}] 枚举适配器失败: {}", _SELF_PLUGIN_ID, e)
+            logger.debug(f"[{_SELF_PLUGIN_ID}] 枚举适配器失败: {e}")
 
     def _retune_live(self) -> int:
         """把调优参数套用到每个已建立的连接上，返回生效的连接数。"""
@@ -265,11 +265,11 @@ class WsKeepalivePlugin(BasePlugin):
                 applied += 1
                 if self.debug_log:
                     logger.info(
-                        "[{}] 已对现有连接生效: ping_timeout={} ping_interval={}",
-                        _SELF_PLUGIN_ID, ws.ping_timeout, ws.ping_interval,
+                        f"[{_SELF_PLUGIN_ID}] 已对现有连接生效: "
+                        f"ping_timeout={ws.ping_timeout} ping_interval={ws.ping_interval}"
                     )
             except Exception as e:
-                logger.debug("[{}] 调整现有连接失败: {}", _SELF_PLUGIN_ID, e)
+                logger.debug(f"[{_SELF_PLUGIN_ID}] 调整现有连接失败: {e}")
         return applied
 
     async def _watch_loop(self) -> None:
@@ -290,6 +290,6 @@ class WsKeepalivePlugin(BasePlugin):
             try:
                 n = self._retune_live()
                 if n and self.debug_log:
-                    logger.info("[{}] 巡检: 已刷新 {} 个连接", _SELF_PLUGIN_ID, n)
+                    logger.info(f"[{_SELF_PLUGIN_ID}] 巡检: 已刷新 {n} 个连接")
             except Exception as e:
-                logger.debug("[{}] 巡检出错: {}", _SELF_PLUGIN_ID, e)
+                logger.debug(f"[{_SELF_PLUGIN_ID}] 巡检出错: {e}")
