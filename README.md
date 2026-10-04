@@ -2,7 +2,7 @@
 
 **WS 保活调优插件** —— 让 KiraAI 连接 OneBot (SnowLuma / NapCat) 时不再因为一次卡顿就误判断线。
 
-作者：znq19 ｜ 版本 1.0.0 ｜ 适配 KiraAI `>= 2.29.6`
+作者：znq19 ｜ 适配 KiraAI `>= 2.29.6`
 
 ---
 
