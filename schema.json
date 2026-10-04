@@ -1,0 +1,43 @@
+{
+  "section_keepalive": {
+    "type": "section",
+    "name": "保活参数",
+    "collapsed": false,
+    "fields": {
+      "ping_timeout": {
+        "name": "ping 超时（秒）",
+        "type": "float",
+        "default": 30.0,
+        "minimum": 5.0,
+        "hint": "客户端发出 ping 后等待 pong 的最长时间。默认只给 10 秒——对 KiraAI 这种要调 LLM、要下图片的进程偏紧：任何一次事件循环卡顿超过 10 秒（LLM 描述图片、httpx 下载图片、GC、磁盘 IO 尖峰）都会让 pong 处理不及时，触发客户端 keepalive 超时（1011）而断线。建议 30；机器很忙可到 45~60。不建议超过 120：太长会拖慢「真断线」的发现。"
+      },
+      "ping_interval": {
+        "name": "ping 间隔（秒）",
+        "type": "float",
+        "default": 20.0,
+        "minimum": 5.0,
+        "hint": "客户端主动发 ping 的频率（保活心跳）。保持默认 20 即可：它比服务端的心跳更频繁，是「我还活着」的正向证据。调小会增加流量，通常不需要。"
+      },
+      "open_timeout": {
+        "name": "连接超时（秒）",
+        "type": "float",
+        "default": 10.0,
+        "minimum": 3.0,
+        "hint": "建立 WebSocket 连接（含握手）的最长时间。默认 5 秒；启动阶段机器繁忙时容易超时重试，建议放宽到 10。"
+      }
+    }
+  },
+  "section_advanced": {
+    "type": "section",
+    "name": "高级",
+    "collapsed": true,
+    "fields": {
+      "debug_log": {
+        "name": "输出调试日志",
+        "type": "switch",
+        "default": false,
+        "hint": "记录每次应用参数、每次巡检结果，便于确认插件是否生效（在日志里搜 [ws-keepalive]）。"
+      }
+    }
+  }
+}
