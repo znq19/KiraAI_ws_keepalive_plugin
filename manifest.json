@@ -4,7 +4,7 @@
   "uninstallable": true,
   "version": "1.0.0",
   "author": "znq19",
-  "description": "针对 OneBot (SnowLuma/NapCat) WebSocket 连接的保活调优插件。KiraAI 默认的 ping_timeout=10 秒对需要调 LLM、下图片的进程偏紧：一次事件循环卡顿就可能触发客户端 keepalive 超时（日志里的 1011 keepalive ping timeout），导致连接断开、丢消息或延误回复。本插件不改 KiraAI 源码，把保活容忍度放宽（默认 ping_timeout 10→30 秒、open_timeout 5→10 秒），并同时挂钩新建连接与所有重连，卡顿时不再误判断线。",
+  "description": "针对 OneBot (SnowLuma/NapCat) WebSocket 连接的保活调优插件，放宽判定容忍度，卡顿时不再误判导致断线。",
   "repo": "https://github.com/znq19/KiraAI_ws_keepalive_plugin",
   "core_version": ">=2.29.6",
   "icon": "icon.png",
