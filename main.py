@@ -26,6 +26,19 @@ LLM 描述图片、一次 httpx 图片下载、一次 GC 停顿，都可能超�
 2. **巡检已建立的连接** —— 处理「插件加载时连接已经建立」的情况，以及任何
    绕过挂钩的重连。
 
+谁来判定「连接死了」
+--------------------
+两端都有心跳，所以容忍度必须**有次序**：
+
+* **服务端（SnowLuma / NapCat）** 才是判定生死的权威——它清楚自己的状态，
+  回收时会发一个带原因的优雅关闭（1001），客户端能看到确切理由。
+* **客户端（本插件）** 因此绝不能抢在服务端之前断开：`ping_timeout` 默认
+  放宽到 300 秒，与服务端心跳容忍对齐。一次卡顿，若服务端本打算「再等等」，
+  就不该被客户端单方面的 1011 变成断线。
+
+真断线照样被发现，且**不依赖心跳**：进程一死，TCP 立刻关闭（FIN/RST），
+客户端的接收循环立刻报错并重连；只读不消费的客户端由服务端写背压兜底。
+
 设计原则：只放宽容忍度，**绝不伪造心跳**。真断线照样会被发现并重连。
 插件停用/卸载时会把连接函数还原回原样。
 """
@@ -91,7 +104,10 @@ class WsKeepalivePlugin(BasePlugin):
 
         # ========== 从 section_keepalive 读取保活参数 ==========
         keep = _section(cfg, "section_keepalive")
-        self.ping_timeout = _safe_float(keep.get("ping_timeout"), 30.0, minimum=5.0)
+        # 300s：与服务端（SnowLuma）的心跳容忍对齐（30s × (9+1) ≈ 300s）。客户端
+        # 绝不能抢在服务端之前断开，否则一次卡顿就被单方面 1011 成断线；真断线
+        # 由 TCP 兜底（进程死 → 立刻 FIN/RST），不依赖客户端心跳。
+        self.ping_timeout = _safe_float(keep.get("ping_timeout"), 300.0, minimum=5.0)
         self.ping_interval = _safe_float(keep.get("ping_interval"), 20.0, minimum=5.0)
         self.open_timeout = _safe_float(keep.get("open_timeout"), 10.0, minimum=3.0)
 
