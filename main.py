@@ -45,14 +45,26 @@ LLM 描述图片、一次 httpx 图片下载、一次 GC 停顿，都可能超�
 
 import asyncio
 import importlib
+import json
 from typing import Any, Optional
 
 from core.plugin import BasePlugin, logger
+from core.utils.path_utils import get_config_path
 
 _SELF_PLUGIN_ID = "ws-keepalive"
 
 # 巡检间隔（秒）：足够快以兜住重连，又不至于频繁打扰。
 _WATCH_INTERVAL_S = 15.0
+
+# ── 一次性配置迁移 ──────────────────────────────────────────────────────
+# 背景：框架会把 schema 默认值**物化**进配置文件，所以 v1.0.1 的存量用户文件里
+# 存的是旧默认 ``ping_timeout=30``；框架只补缺失键、不会覆盖已有值——不迁的话
+# 他们永远停在 30。这里把「还停在旧默认 30」的用户一次性迁到新默认 300，
+# 用户自己改过的值一律不动；配置里的版本哨兵保证只迁一次。
+_CFG_VERSION_KEY = "_cfg_version"
+_CFG_VERSION = 2                       # 2 = ping_timeout 默认 300
+_LEGACY_PING_TIMEOUT_DEFAULT = 30.0    # v1.0.1 及更早的默认
+_NEW_PING_TIMEOUT_DEFAULT = 300.0      # 本版起的新默认
 
 
 def _safe_float(value: Any, default: float, minimum: Optional[float] = None) -> float:
@@ -102,6 +114,11 @@ class WsKeepalivePlugin(BasePlugin):
     def __init__(self, ctx, cfg: dict):
         super().__init__(ctx, cfg)
 
+        # 一次性迁移：把「还停在旧默认 ping_timeout=30」的存量用户迁到新默认 300。
+        # 必须在读取参数之前做，且 self.plugin_cfg 与注册表缓存是同一份，
+        # 原地改 + 落盘后 WebUI 与后续运行都看到迁移后的值。
+        self._migrate_config_once()
+
         # ========== 从 section_keepalive 读取保活参数 ==========
         keep = _section(cfg, "section_keepalive")
         # 300s：与服务端（SnowLuma）的心跳容忍对齐（30s × (9+1) ≈ 300s）。客户端
@@ -121,6 +138,46 @@ class WsKeepalivePlugin(BasePlugin):
         self._wrapper: Optional[Any] = None
         self._watch_task: Optional[asyncio.Task] = None
         self._stop_event: Optional[asyncio.Event] = None
+
+    # ── 一次性配置迁移 ─────────────────────────────────────────────────
+
+    def _migrate_config_once(self) -> None:
+        """把「还停在旧默认 ping_timeout=30」的存量用户迁到新默认 300，只迁一次。
+
+        - **只动旧默认值**：值恰好等于 30 才改；用户自己设的值（45/120/…）不碰。
+          （无法区分「用户特意设了 30」与「一直是默认 30」——前者会被迁一次，
+          可再改回，且因哨兵不会被再迁。）
+        - **只迁一次**：写入版本哨兵 ``_cfg_version``。之后用户再把 ping_timeout
+          改回 30，也不会被重复迁移。
+        """
+        if _safe_float(self.plugin_cfg.get(_CFG_VERSION_KEY), 0.0) >= _CFG_VERSION:
+            return  # 已迁过
+        keep = _section(self.plugin_cfg, "section_keepalive")
+        cur = keep.get("ping_timeout")
+        if cur is None or abs(
+            _safe_float(cur, _LEGACY_PING_TIMEOUT_DEFAULT) - _LEGACY_PING_TIMEOUT_DEFAULT
+        ) < 1e-9:
+            keep["ping_timeout"] = _NEW_PING_TIMEOUT_DEFAULT
+        self.plugin_cfg[_CFG_VERSION_KEY] = _CFG_VERSION
+        self._persist_config()
+
+    def _persist_config(self) -> bool:
+        """把内存里的 plugin_cfg 写回插件配置文件。
+
+        ``self.plugin_cfg`` 与注册表在内存里持有的是**同一份** dict，所以原地
+        修改 + 落盘后，WebUI 与后续运行无需重载就能看到迁移后的值。
+        （与框架内置 agent 插件的迁移写法一致；不调用 update_plugin_config，
+        以免在 initialize 期间触发本插件重载。）
+        """
+        config_path = get_config_path() / "plugins" / f"{_SELF_PLUGIN_ID}.json"
+        try:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            with config_path.open("w", encoding="utf-8") as f:
+                json.dump(self.plugin_cfg, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[{_SELF_PLUGIN_ID}] 迁移配置落盘失败: {e}")
+            return False
+        return True
 
     # ── 生命周期 ─────────────────────────────────────────────────────────
 

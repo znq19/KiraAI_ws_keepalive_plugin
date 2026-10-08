@@ -56,6 +56,16 @@ def build_stub_env() -> dict:
     sys.modules["core"] = core
     sys.modules["core.plugin"] = plugin_mod
 
+    # ── 桩 core.utils.path_utils（迁移要用的 get_config_path，指向临时目录）──
+    import tempfile
+    from pathlib import Path
+    utils_mod = types.ModuleType("core.utils")
+    path_utils_mod = types.ModuleType("core.utils.path_utils")
+    _tmp = Path(tempfile.mkdtemp(prefix="ws_keepalive_selfcheck_"))
+    path_utils_mod.get_config_path = lambda: _tmp
+    sys.modules["core.utils"] = utils_mod
+    sys.modules["core.utils.path_utils"] = path_utils_mod
+
     captured: dict = {}
 
     def ws_compatible_connect(uri, *, extra_headers, **kwargs):
