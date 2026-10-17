@@ -27,6 +27,33 @@
       }
     }
   },
+  "section_group_cache": {
+    "type": "section",
+    "name": "群信息缓存",
+    "collapsed": true,
+    "fields": {
+      "enabled": {
+        "name": "启用群信息缓存",
+        "type": "switch",
+        "default": true,
+        "hint": "KiraAI 每收到一条群消息都会调一次 get_group_info（只为拿群名），每条通知消息也会调一次 —— 都是一次完整的 WS 请求/响应往返。群名在 TTL 内不会变化，缓存后同一群只查一次，消息处理少一次往返，活跃群里能明显减少 WS 拥塞与超时。只缓存「明确成功」的响应；失败/异常照旧抛出、不缓存；命中返回深拷贝，调用方修改返回值不会污染缓存。关闭=完全回到框架原逻辑。"
+      },
+      "ttl": {
+        "name": "缓存有效期（秒）",
+        "type": "float",
+        "default": 600.0,
+        "minimum": 5.0,
+        "hint": "群名等信息的刷新间隔。群名极少变化，600 秒（10 分钟）足够；即使改名，最迟 TTL 后自动更新。调小=更实时、往返更多。"
+      },
+      "max_entries": {
+        "name": "最多缓存群数",
+        "type": "int",
+        "default": 512,
+        "minimum": 16,
+        "hint": "缓存上限，超出后按插入顺序淘汰最旧的。每条仅一个群信息 dict（约 1KB），512 条约 0.5MB，可忽略。"
+      }
+    }
+  },
   "section_advanced": {
     "type": "section",
     "name": "高级",

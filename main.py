@@ -44,8 +44,10 @@ LLM 描述图片、一次 httpx 图片下载、一次 GC 停顿，都可能超�
 """
 
 import asyncio
+import copy
 import importlib
 import json
+import time
 from typing import Any, Optional
 
 from core.plugin import BasePlugin, logger
@@ -132,10 +134,20 @@ class WsKeepalivePlugin(BasePlugin):
         adv = _section(cfg, "section_advanced")
         self.debug_log = bool(adv.get("debug_log", False))
 
+        # ========== 从 section_group_cache 读取群信息缓存参数 ==========
+        # 默认开：群名在 TTL 内不会变化，重复读取返回同一份数据，
+        # 只是把「每条群消息一次 get_group_info」的 WS 往返省掉。
+        gcache = _section(cfg, "section_group_cache")
+        self.group_cache_enabled = bool(gcache.get("enabled", True))
+        self.group_cache_ttl = _safe_float(gcache.get("ttl"), 600.0, minimum=5.0)
+        self.group_cache_max = int(_safe_float(gcache.get("max_entries"), 512.0, minimum=16.0))
+
         # 运行时状态
         self._patched = False
         self._orig_connect: Optional[Any] = None
         self._wrapper: Optional[Any] = None
+        self._group_cache_patched = False
+        self._orig_get_group_info: Optional[Any] = None
         self._watch_task: Optional[asyncio.Task] = None
         self._stop_event: Optional[asyncio.Event] = None
 
@@ -195,6 +207,21 @@ class WsKeepalivePlugin(BasePlugin):
                 f"将仅对已建立的连接生效"
             )
 
+        # 群信息缓存：把「每条群消息一次 get_group_info」的重复 WS 往返省掉
+        # 关闭时也调用：会拆掉旧实例（热重载残留）的包装，确保关闭立即生效
+        cache_ok = self._patch_group_cache()
+        if self.group_cache_enabled:
+            if cache_ok:
+                logger.info(
+                    f"[{_SELF_PLUGIN_ID}] 群信息缓存已启用: ttl={self.group_cache_ttl:.0f}s "
+                    f"max={self.group_cache_max} 群（只缓存成功响应，失败不缓存）"
+                )
+            else:
+                logger.warning(
+                    f"[{_SELF_PLUGIN_ID}] 无法挂钩 get_group_info（KiraAI 版本可能不同）；"
+                    f"群信息缓存已跳过，其余功能不受影响"
+                )
+
         # 适配器可能在本插件加载前就已连接，先实时调优一次
         n = self._retune_live()
         if n and self.debug_log:
@@ -218,6 +245,7 @@ class WsKeepalivePlugin(BasePlugin):
             except Exception as e:
                 logger.debug(f"[{_SELF_PLUGIN_ID}] 巡检任务收尾异常: {e}")
             self._watch_task = None
+        self._restore_group_cache()
         self._restore_connect()
         logger.info(f"[{_SELF_PLUGIN_ID}] 已停止")
 
@@ -299,6 +327,131 @@ class WsKeepalivePlugin(BasePlugin):
         except Exception:
             pass
         self._patched = False
+
+    # ── 动作 3：群信息缓存（砍掉每条群消息一次 WS 往返） ────────────────
+
+    @staticmethod
+    def _napcat_client_class():
+        """定位 `NapCatWebSocketClient`；拿不到就返回 None（功能自动跳过）。"""
+        try:
+            from core.adapter.src.qq import napcat_client as pkg
+
+            module = importlib.import_module(f"{pkg.__name__}.client")
+            return getattr(module, "NapCatWebSocketClient", None)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _group_cacheable(resp: Any) -> bool:
+        """只缓存「明确成功」的响应；失败/异常一律不缓存。"""
+        if not isinstance(resp, dict):
+            return False
+        if resp.get("status") not in (None, "ok"):
+            return False
+        if resp.get("retcode") not in (None, 0):
+            return False
+        return isinstance(resp.get("data"), dict)
+
+    def _make_group_info_wrapper(self, orig):
+        """构造带缓存的 `get_group_info` 包装函数。
+
+        安全边界（逐条都有自检覆盖）：
+        * 只缓存成功响应；异常原样抛出，绝不缓存、绝不吞掉；
+        * 命中时返回 **deepcopy**，调用方改返回的 dict 也不会污染缓存；
+        * 缓存挂在**客户端实例**上（每个 bot 账号独立、上限固定），命中判断
+          纯内存：一次 dict 查找 + deepcopy，无锁、无 await、无阻塞；
+        * 未命中时完全按原逻辑 `await orig(...)`，超时/异常语义不变；
+        * 只影响 `get_group_info` 的重复读取，其它 API 与消息路径一律不碰。
+        """
+        ttl = self.group_cache_ttl
+        max_entries = self.group_cache_max
+        enabled = self.group_cache_enabled
+        cacheable = self._group_cacheable
+
+        async def cached_get_group_info(client_self, *args, **kwargs):
+            if not enabled:
+                return await orig(client_self, *args, **kwargs)
+
+            gid = kwargs.get("group_id")
+            if gid is None and args:
+                gid = args[0]
+            if gid is None:
+                return await orig(client_self, *args, **kwargs)
+
+            key = str(gid)
+            now = time.monotonic()
+            cache = client_self.__dict__.get("_wskeep_group_info_cache")
+            if not isinstance(cache, dict):
+                cache = {}
+                try:
+                    client_self._wskeep_group_info_cache = cache
+                except Exception:
+                    # 实例不允许写属性时退回无缓存（绝不影响主流程）
+                    return await orig(client_self, *args, **kwargs)
+
+            hit = cache.get(key)
+            # 防御：条目结构异常（旧版本残留/外部误写）时当作未命中，绝不让
+            # 缓存里的脏数据把 get_group_info 变成异常源。
+            if isinstance(hit, tuple) and len(hit) == 2 and hit[0] > now:
+                return copy.deepcopy(hit[1])
+
+            resp = await orig(client_self, *args, **kwargs)
+            if cacheable(resp):
+                # 过期时间从**响应返回时**起算（慢请求不会白吃 TTL）
+                cache[key] = (time.monotonic() + ttl, copy.deepcopy(resp))
+                if len(cache) > max_entries:
+                    # 有界：按插入顺序淘汰最旧的（dict 保序，不额外记账）
+                    for old_key in list(cache.keys())[: len(cache) - max_entries]:
+                        cache.pop(old_key, None)
+            return resp
+
+        # 标记 + 原始实现：热重载/卸载时据此识别并还原，绝不套娃
+        cached_get_group_info.__wskeep_group_cache__ = True
+        cached_get_group_info.__wrapped__ = orig
+        return cached_get_group_info
+
+    def _patch_group_cache(self) -> bool:
+        """把带缓存的 `get_group_info` 装到客户端类上（新老实例同时生效）。
+
+        关闭时不是简单 return：如果类上还残留**上一个插件实例**的包装
+        （热重载时旧实例可能来不及 terminate），这里把它拆回原始实现，
+        确保「改成关闭」在重载后立即生效。
+        """
+        cls = self._napcat_client_class()
+        if cls is None:
+            return False
+        cur = cls.__dict__.get("get_group_info")
+        if cur is None:
+            return False
+        if not self.group_cache_enabled:
+            if getattr(cur, "__wskeep_group_cache__", False):
+                orig = getattr(cur, "__wrapped__", None)
+                if orig is not None:
+                    cls.get_group_info = orig
+            return False
+        if getattr(cur, "__wskeep_group_cache__", False):
+            # 热重载残留的旧包装：拆回原始实现再重包，避免缓存套缓存
+            cur = getattr(cur, "__wrapped__", None)
+            if cur is None:
+                return False
+        self._orig_get_group_info = cur
+        cls.get_group_info = self._make_group_info_wrapper(cur)
+        self._group_cache_patched = True
+        return True
+
+    def _restore_group_cache(self) -> None:
+        """卸载时还原；只还原我们自己的包装（别人后来覆盖的不动）。"""
+        if not self._group_cache_patched or self._orig_get_group_info is None:
+            return
+        try:
+            cls = self._napcat_client_class()
+            if cls is not None:
+                cur = cls.__dict__.get("get_group_info")
+                if getattr(cur, "__wskeep_group_cache__", False):
+                    cls.get_group_info = self._orig_get_group_info
+        except Exception:
+            pass
+        self._group_cache_patched = False
 
     # ── 动作 2：实时调优已建立的连接 ─────────────────────────────────────
 
